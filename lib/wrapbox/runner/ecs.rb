@@ -4,6 +4,7 @@ require "thor"
 require "yaml"
 require "active_support/core_ext/hash"
 require "logger"
+require "parallel"
 
 require "wrapbox/config_repository"
 require "wrapbox/version"
@@ -74,20 +75,17 @@ module Wrapbox
         )
       end
 
-      def run_cmd(cmds, container_definition_overrides: {}, **parameters)
+      def run_cmd(cmds, container_definition_overrides: {}, jobs: cmds.size, **parameters)
         task_definition = register_task_definition(container_definition_overrides)
         parameter = Parameter.new(**parameters)
 
-        ths = cmds.map do |cmd|
-          Thread.new(cmd) do |c|
-            run_task(
-              task_definition.task_definition_arn, nil, nil, nil,
-              c.split(/\s+/),
-              parameter
-            )
-          end
+        Parallel.each(cmds, in_threads: jobs) do |cmd|
+          run_task(
+            task_definition.task_definition_arn, nil, nil, nil,
+            cmd.split(/\s+/),
+            parameter
+          )
         end
-        ths.each(&:join)
       end
 
       private
@@ -359,6 +357,7 @@ module Wrapbox
         method_option :launch_retry, type: :numeric
         method_option :execution_retry, type: :numeric
         method_option :max_retry_interval, type: :numeric
+        method_option :jobs, aliases: "-j", type: :numeric
         def run_cmd(*args)
           repo = Wrapbox::ConfigRepository.new.tap { |r| r.load_yaml(options[:config]) }
           config = repo.get(options[:config_name])
@@ -373,7 +372,8 @@ module Wrapbox
             launch_timeout: options[:launch_timeout],
             launch_retry: options[:launch_retry],
             execution_retry: options[:execution_retry],
-            max_retry_interval: options[:max_retry_interval]
+            max_retry_interval: options[:max_retry_interval],
+            jobs: options[:jobs],
           }.reject { |_, v| v.nil? }
           runner.run_cmd(args, environments: environments, **run_options)
         end
